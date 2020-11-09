@@ -5,10 +5,9 @@ import "time"
 const LAYOUT = "2006-01-02T15:04Z"
 
 type CoreTimeStamp struct {
-	TriggerTime   string
-	RunningTime   string
-	InServiceTime string
-	ReadyTime     string
+	RunningTime   time.Time
+	InServiceTime time.Time
+	ReadyTime     time.Time
 }
 
 type NodeResult struct {

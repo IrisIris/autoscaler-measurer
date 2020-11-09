@@ -22,6 +22,8 @@ func GetNodes(clusterId string, ak types.AKInfo) (*types.NodeResult, error) {
 	request.PathPattern = "/clusters/" + clusterId + "/nodes"
 	request.Headers["Content-Type"] = "application/json"
 	//request.QueryParams["RegionId"] = "cn-hangzhou"
+	request.QueryParams["pageSize"] = "300"
+
 	body := `{}`
 	request.Content = []byte(body)
 

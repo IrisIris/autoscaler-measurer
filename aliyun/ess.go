@@ -7,6 +7,8 @@ import (
 	"github.com/aliyun/alibaba-cloud-sdk-go/sdk/requests"
 	"github.com/aliyun/alibaba-cloud-sdk-go/services/ess"
 	log "github.com/sirupsen/logrus"
+	"strconv"
+	"strings"
 	"time"
 )
 
@@ -109,7 +111,7 @@ func DescribeScalingActivities(essClient *ess.Client, regionId string, scalingGr
 }
 
 func DescribeScalingActivitieDetails(essClient *ess.Client, regionId string, scalingActivityId string) string {
-	log.Infof("Start to DescribeScalingActivitieDetails for Activities %s", scalingActivityId)
+	//log.Infof("Start to DescribeScalingActivitieDetails for Activities %s", scalingActivityId)
 	args := ess.CreateDescribeScalingActivityDetailRequest()
 	args.RegionId = regionId
 	args.ScalingActivityId = scalingActivityId
@@ -125,7 +127,7 @@ func DescribeScalingActivitieDetails(essClient *ess.Client, regionId string, sca
 	return queryScalingActivityDetailResponse.Detail
 }
 
-func DescribeScalingInstances(essClient *ess.Client, regionId, sgId string, timeRecorder *map[string]*types.CoreTimeStamp, readyNodes *map[string]string, triggerTime time.Time, exspectNodeNum int64) {
+func DescribeScalingInstances(essClient *ess.Client, regionId, sgId string, timeRecorder *map[string]*types.CoreTimeStamp, readyNodes *map[string]string, triggerTime time.Time, exspectNodeNum int64, scalingPolicy string, akInfo *types.AKInfo) {
 	for pageNum := 1; pageNum < int(exspectNodeNum/50+1)+1; pageNum++ {
 		scalingInstances, err := DescribeInstanceScaling(essClient, regionId, sgId, pageNum)
 		if err != nil || len(scalingInstances) == 0 {
@@ -133,33 +135,57 @@ func DescribeScalingInstances(essClient *ess.Client, regionId, sgId string, time
 			break
 		}
 		for _, instance := range scalingInstances {
+			log.Infof("start to describe instance %s: %v", instance.InstanceId, instance)
 			if instance.CreationTime != "" {
 				instanceCreatedTime, err := time.Parse(types.LAYOUT, instance.CreationTime)
 				if err != nil {
 					log.Warnf("parse %s start time %v failed, err %v", instance.CreationTime, err)
 					continue
 				}
-				if instanceCreatedTime.Before(triggerTime) {
-					//log.Warnf("instance %s created at %s before trigger time %s", instance.InstanceId, instanceCreatedTime, triggerTime)
-					(*readyNodes)[instance.InstanceId] = "ready"
-					continue
+				// 极速模式不适用
+				if scalingPolicy != "recycle" {
+					if instanceCreatedTime.Before(triggerTime) {
+						//log.Warnf("instance %s created at %s before trigger time %s", instance.InstanceId, instanceCreatedTime, triggerTime)
+						(*readyNodes)[instance.InstanceId] = "ready"
+						continue
+					}
 				}
 			}
 
-			if times, ok := (*timeRecorder)[instance.InstanceId]; ok && times.RunningTime != "" && times.InServiceTime != "" {
+			//if times, ok := (*timeRecorder)[instance.InstanceId]; ok && times.RunningTime != "" && times.InServiceTime != "" {
+			if times, ok := (*timeRecorder)[instance.InstanceId]; ok && !times.RunningTime.IsZero() && !times.InServiceTime.IsZero() {
 				continue
 			}
-			log.Infof("start to watch instance %s to be in service", instance.InstanceId)
+
 			// ECS实例在伸缩组中的健康状态，未处于运行中（Running）状态的ECS实例会被判定为不健康的ECS实例
-			if instance.HealthStatus == "Healthy" {
-				if (*timeRecorder)[instance.InstanceId] == nil {
-					(*timeRecorder)[instance.InstanceId] = &types.CoreTimeStamp{}
-				}
-				(*timeRecorder)[instance.InstanceId].RunningTime = fmt.Sprintf("%s", time.Now())
-				if instance.LifecycleState == "InService" {
-					(*timeRecorder)[instance.InstanceId].InServiceTime = fmt.Sprintf("%s", time.Now())
-				}
+			// get running time from ecs
+			if !IsEcsRunningTime(regionId, instance.InstanceId, akInfo) {
+				log.Infof("wait for instance %s to be running", instance.InstanceId)
+				continue
 			}
+			if (*timeRecorder)[instance.InstanceId] == nil {
+				(*timeRecorder)[instance.InstanceId] = &types.CoreTimeStamp{}
+			}
+			//(*timeRecorder)[instance.InstanceId].RunningTime = fmt.Sprintf("%s", time.Now())
+			(*timeRecorder)[instance.InstanceId].RunningTime = time.Now()
+
+			log.Infof("start to watch instance %s to be in service", instance.InstanceId)
+			if instance.LifecycleState == "InService" {
+				(*timeRecorder)[instance.InstanceId].InServiceTime = time.Now()
+				log.Infof("instance %s is in service, timeRecorder is %v", instance.InstanceId, *(*timeRecorder)[instance.InstanceId])
+			}
+
+			//if instance.HealthStatus == "Healthy" {
+			//	if (*timeRecorder)[instance.InstanceId] == nil {
+			//		(*timeRecorder)[instance.InstanceId] = &types.CoreTimeStamp{}
+			//	}
+			//	//(*timeRecorder)[instance.InstanceId].RunningTime = fmt.Sprintf("%s", time.Now())
+			//	(*timeRecorder)[instance.InstanceId].RunningTime = time.Now()
+			//	if instance.LifecycleState == "InService" {
+			//		(*timeRecorder)[instance.InstanceId].InServiceTime = time.Now()
+			//		log.Infof("instance %s is in service, timeRecorder is %v", instance.InstanceId, *(*timeRecorder)[instance.InstanceId])
+			//	}
+			//}
 		}
 
 	}
@@ -183,4 +209,19 @@ func DescribeInstanceScaling(essClient *ess.Client, regionId string, sgId string
 	// log.Debugf("DescribeScalingInstances Response = %++v", response)
 
 	return response.ScalingInstances.ScalingInstance, nil
+}
+
+func GetScalingActivitAimNum(cause string) int64 {
+	if len(cause) == 0 {
+		return 228
+	}
+	splitSlice := strings.Split(cause, "changing the Total Capacity from \"0\" to \"")
+	resultSlice := strings.Split(splitSlice[len(splitSlice)-1], "\"")
+	exspectNodeNumStr := resultSlice[0]
+	exspectNodeNum, err := strconv.ParseInt(exspectNodeNumStr, 10, 64)
+	if err != nil {
+		exspectNodeNum = 228
+		log.Errorf("Failed to parse toWatchScalingActivity.Cause %s to int,err: %v", cause, err)
+	}
+	return exspectNodeNum
 }
