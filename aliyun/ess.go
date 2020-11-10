@@ -36,7 +36,6 @@ func filterNewScalingActivities(essClient *ess.Client, regionId string, scalingA
 			if sa.StatusCode == "Failed" || sa.StatusCode == "Rejected" {
 				detail := DescribeScalingActivitieDetails(essClient, regionId, sa.ScalingActivityId)
 				log.Warnf("The ScalingActivity %s excute reuslt is Reason : %s,Description : %s, Detail : %s", sa.ScalingActivityId, sa.Cause, sa.Description, detail)
-				//return true, fmt.Errorf("ScalingActivity.Failed", fmt.Sprintf("Reson : %s , Description : %s , Detail : %s", ac.Cause, ac.Description, detail), queryScalingActivityResponse.RequestId)
 			}
 		}
 	}
@@ -55,8 +54,7 @@ func QueryScalingActivities(essClient *ess.Client, regionId string, scalingGroup
 		if err != nil {
 			return false, err
 		}
-		//log.Infof("%s Successfully to DescribeScalingActivities", scalingGroupId)
-		//log.Infof("%s Successfully to DescribeScalingActivities Response ScalingActivities = %++v", scalingGroupId, queryScalingActivityResponse.ScalingActivities)
+		log.Tracef("%s Successfully to DescribeScalingActivities Response ScalingActivities = %++v", scalingGroupId, queryScalingActivityResponse.ScalingActivities)
 		filtered, err = filterNewScalingActivities(essClient, regionId, queryScalingActivityResponse.ScalingActivities, scalingGroupId, runStartTime)
 		if err != nil {
 			return false, nil
@@ -111,7 +109,7 @@ func DescribeScalingActivities(essClient *ess.Client, regionId string, scalingGr
 }
 
 func DescribeScalingActivitieDetails(essClient *ess.Client, regionId string, scalingActivityId string) string {
-	//log.Infof("Start to DescribeScalingActivitieDetails for Activities %s", scalingActivityId)
+	log.Debugf("Start to DescribeScalingActivitieDetails for Activities %s", scalingActivityId)
 	args := ess.CreateDescribeScalingActivityDetailRequest()
 	args.RegionId = regionId
 	args.ScalingActivityId = scalingActivityId
@@ -142,17 +140,16 @@ func DescribeScalingInstances(essClient *ess.Client, regionId, sgId string, time
 					log.Warnf("parse %s start time %v failed, err %v", instance.CreationTime, err)
 					continue
 				}
-				// 极速模式不适用
+				// 极速模式不能用创建时间判断
 				if scalingPolicy != "recycle" {
 					if instanceCreatedTime.Before(triggerTime) {
-						//log.Warnf("instance %s created at %s before trigger time %s", instance.InstanceId, instanceCreatedTime, triggerTime)
+						log.Debugf("instance %s created at %s before trigger time %s", instance.InstanceId, instanceCreatedTime, triggerTime)
 						(*readyNodes)[instance.InstanceId] = "ready"
 						continue
 					}
 				}
 			}
 
-			//if times, ok := (*timeRecorder)[instance.InstanceId]; ok && times.RunningTime != "" && times.InServiceTime != "" {
 			if times, ok := (*timeRecorder)[instance.InstanceId]; ok && !times.RunningTime.IsZero() && !times.InServiceTime.IsZero() {
 				continue
 			}
@@ -166,7 +163,7 @@ func DescribeScalingInstances(essClient *ess.Client, regionId, sgId string, time
 			if (*timeRecorder)[instance.InstanceId] == nil {
 				(*timeRecorder)[instance.InstanceId] = &types.CoreTimeStamp{}
 			}
-			//(*timeRecorder)[instance.InstanceId].RunningTime = fmt.Sprintf("%s", time.Now())
+
 			(*timeRecorder)[instance.InstanceId].RunningTime = time.Now()
 
 			log.Infof("start to watch instance %s to be in service", instance.InstanceId)
@@ -174,39 +171,26 @@ func DescribeScalingInstances(essClient *ess.Client, regionId, sgId string, time
 				(*timeRecorder)[instance.InstanceId].InServiceTime = time.Now()
 				log.Infof("instance %s is in service, timeRecorder is %v", instance.InstanceId, *(*timeRecorder)[instance.InstanceId])
 			}
-
-			//if instance.HealthStatus == "Healthy" {
-			//	if (*timeRecorder)[instance.InstanceId] == nil {
-			//		(*timeRecorder)[instance.InstanceId] = &types.CoreTimeStamp{}
-			//	}
-			//	//(*timeRecorder)[instance.InstanceId].RunningTime = fmt.Sprintf("%s", time.Now())
-			//	(*timeRecorder)[instance.InstanceId].RunningTime = time.Now()
-			//	if instance.LifecycleState == "InService" {
-			//		(*timeRecorder)[instance.InstanceId].InServiceTime = time.Now()
-			//		log.Infof("instance %s is in service, timeRecorder is %v", instance.InstanceId, *(*timeRecorder)[instance.InstanceId])
-			//	}
-			//}
 		}
 
 	}
 }
 
 func DescribeInstanceScaling(essClient *ess.Client, regionId string, sgId string, pageNumber int) ([]ess.ScalingInstance, error) {
-	//log.Infof("%s Start to DescribeScalingInstances page number %d", sgId, pageNumber)
+	log.Debugf("%s Start to DescribeScalingInstances page number %d", sgId, pageNumber)
 	args := ess.CreateDescribeScalingInstancesRequest()
 	args.RegionId = regionId
 	args.PageSize = requests.NewInteger(50)
 	args.PageNumber = requests.NewInteger(pageNumber)
 	args.ScalingGroupId = sgId
 
-	// log.Debugf("DescribeScalingInstances Args = %++v", args)
+	log.Debugf("DescribeScalingInstances Args = %++v", args)
 	response, err := essClient.DescribeScalingInstances(args)
 	if err != nil {
 		log.Errorf("Failed to DescribeScalingInstances error %++v", err)
 		return nil, err
 	}
-
-	// log.Debugf("DescribeScalingInstances Response = %++v", response)
+	log.Debugf("DescribeScalingInstances Response = %++v", response)
 
 	return response.ScalingInstances.ScalingInstance, nil
 }

@@ -31,7 +31,7 @@ func GetNodes(clusterId string, ak types.AKInfo) (*types.NodeResult, error) {
 	if err != nil {
 		return nil, err
 	}
-	//fmt.Print(response.GetHttpContentString())
+	log.Tracef("acs get nodes response is %s", response.GetHttpContentString())
 	nodesString := response.GetHttpContentString()
 	nodes := types.NodeResult{}
 	err = json.Unmarshal([]byte(nodesString), &nodes)
@@ -39,9 +39,5 @@ func GetNodes(clusterId string, ak types.AKInfo) (*types.NodeResult, error) {
 		log.Errorf("failed to decode to nodes: %v", nodesString)
 		return nil, err
 	}
-	//log.Infof("Inside nodes are %v", nodes)
-	//for _,node := range nodes.Nodes {
-	//	log.Infof("Inside %s is %s", node.InstanceId, node.NodeStatus)
-	//}
 	return &nodes, nil
 }

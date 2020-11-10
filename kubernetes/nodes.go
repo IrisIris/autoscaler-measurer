@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	log "github.com/sirupsen/logrus"
 	appsv1 "k8s.io/api/apps/v1"
-	v1 "k8s.io/api/core/v1"
+	coreV1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 	"time"
@@ -20,7 +20,6 @@ func IsNodeReady(k8sClient *kubernetes.Clientset, nodeName string) bool {
 		log.Warn("node name is empty")
 		return false
 	}
-	//res := map[string]coreV1.NodeCondition{}
 	// access the API to list nodes
 	node, err := k8sClient.CoreV1().Nodes().Get(context.TODO(), nodeName, metav1.GetOptions{})
 	if err != nil {
@@ -36,7 +35,27 @@ func IsNodeReady(k8sClient *kubernetes.Clientset, nodeName string) bool {
 	return false
 }
 
-func IsDeploymentReady(k8sClient *kubernetes.Clientset, depName string) bool {
+func getNodesFromApiServer(k8sClient *kubernetes.Clientset) map[string]coreV1.NodeCondition {
+	res := map[string]coreV1.NodeCondition{}
+	// access the API to list nodes
+	nodes, err := k8sClient.CoreV1().Nodes().List(context.TODO(), metav1.ListOptions{})
+	if err != nil {
+		panic(err)
+	}
+
+	for _, nds := range nodes.Items {
+		//bytes,_ := json.Marshal(nds)
+		//log.Debugf("NodeName api server res is: %s\n", string(bytes))
+		for _, v := range nds.Status.Conditions {
+			if v.Type == "Ready" && v.Status == "True" {
+				res[nds.ObjectMeta.Name] = v
+			}
+		}
+	}
+	return res
+}
+
+func IsDeploymentReady(k8sClient *kubernetes.Clientset, depName string, namespace string) bool {
 	if k8sClient == nil {
 		log.Warn("k8s client is nil")
 		return false
@@ -45,9 +64,10 @@ func IsDeploymentReady(k8sClient *kubernetes.Clientset, depName string) bool {
 		log.Warn("dep name is empty")
 		return false
 	}
-	//res := map[string]coreV1.NodeCondition{}
-	// access the API to list nodes
-	dep, err := k8sClient.AppsV1().Deployments("default").Get(context.TODO(), depName, metav1.GetOptions{})
+	if namespace == "" {
+		namespace = "default"
+	}
+	dep, err := k8sClient.AppsV1().Deployments(namespace).Get(context.TODO(), depName, metav1.GetOptions{})
 	if err != nil {
 		log.Errorf("failed to get node %s, err: %v", depName, err)
 	}
@@ -68,7 +88,7 @@ func IsDeploymentReady(k8sClient *kubernetes.Clientset, depName string) bool {
 	return false
 }
 
-func GetDeployments(k8sClient *kubernetes.Clientset, depName string) *appsv1.Deployment {
+func GetDeployments(k8sClient *kubernetes.Clientset, namespace, depName string) *appsv1.Deployment {
 	if k8sClient == nil {
 		log.Warn("k8s client is nil")
 		return nil
@@ -77,9 +97,12 @@ func GetDeployments(k8sClient *kubernetes.Clientset, depName string) *appsv1.Dep
 		log.Warn("dep name is empty")
 		return nil
 	}
-	//res := map[string]coreV1.NodeCondition{}
+	if namespace == "" {
+		namespace = "default"
+	}
+
 	// access the API to list nodes
-	dep, err := k8sClient.AppsV1().Deployments("default").Get(context.TODO(), depName, metav1.GetOptions{})
+	dep, err := k8sClient.AppsV1().Deployments(namespace).Get(context.TODO(), depName, metav1.GetOptions{})
 	if err != nil {
 		log.Errorf("failed to get node %s, err: %v", depName, err)
 		return nil
@@ -87,11 +110,18 @@ func GetDeployments(k8sClient *kubernetes.Clientset, depName string) *appsv1.Dep
 	return dep
 }
 
-func GetPodsList(k8sClient *kubernetes.Clientset) (*v1.PodList, error) {
+func GetPodsList(k8sClient *kubernetes.Clientset, nameSpace string, depName string) (*coreV1.PodList, error) {
 	if k8sClient == nil {
 		log.Warn("k8s client is nil")
 	}
-	podsList, err := k8sClient.CoreV1().Pods("default").List(context.TODO(), metav1.ListOptions{})
+	listOption := metav1.ListOptions{}
+	if nameSpace == "" {
+		nameSpace = "default"
+	}
+	if depName != "" {
+		listOption.LabelSelector = "app=" + depName
+	}
+	podsList, err := k8sClient.CoreV1().Pods(nameSpace).List(context.TODO(), listOption)
 	if err != nil {
 		log.Errorf("failed to get pods list, err: %v", err)
 		return nil, err
@@ -100,12 +130,12 @@ func GetPodsList(k8sClient *kubernetes.Clientset) (*v1.PodList, error) {
 	return podsList, nil
 }
 
-func GetDepPodsTime(k8sClient *kubernetes.Clientset, depName string) bool {
-	dep := GetDeployments(k8sClient, depName)
+func GetPodsCreatedTime(k8sClient *kubernetes.Clientset, namespace, depName string) bool {
+	dep := GetDeployments(k8sClient, namespace, depName)
 	if dep == nil {
 		return false
 	}
-	podsList, err := GetPodsList(k8sClient)
+	podsList, err := GetPodsList(k8sClient, namespace, depName)
 	if err != nil {
 		return false
 	}
@@ -116,8 +146,8 @@ func GetDepPodsTime(k8sClient *kubernetes.Clientset, depName string) bool {
 	return false
 }
 
-func GetAllPodUnscheduleTime(k8sClient *kubernetes.Clientset, count int) *time.Time {
-	podsList, err := GetPodsList(k8sClient)
+func GetAllPodsUnscheduleTime(k8sClient *kubernetes.Clientset, count int, namespace, depName string) *time.Time {
+	podsList, err := GetPodsList(k8sClient, namespace, depName)
 	if err != nil {
 		return nil
 	}
@@ -142,8 +172,8 @@ func GetAllPodUnscheduleTime(k8sClient *kubernetes.Clientset, count int) *time.T
 	return nil
 }
 
-func GetAllPodsReadyTime(k8sClient *kubernetes.Clientset, count int) *time.Time {
-	podsList, err := GetPodsList(k8sClient)
+func GetAllPodsReadyTime(k8sClient *kubernetes.Clientset, count int, nameSpace, depName string) *time.Time {
+	podsList, err := GetPodsList(k8sClient, nameSpace, depName)
 	if err != nil {
 		return nil
 	}

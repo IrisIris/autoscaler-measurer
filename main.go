@@ -13,7 +13,9 @@ import (
 
 const (
 	// user cluster kubeconfig path
-	ClusterKubeConfigPath = "/Users/hexixi/Documents/code/go/src/github.com/IrisIris/autoscaler-measurer/testClusterConfig"
+	ClusterKubeConfigPath = ""
+	OnlyFastFail          = false
+	LogLevel              = "info" // or "debug"/"trace"
 )
 
 func init() {
@@ -22,72 +24,76 @@ func init() {
 	customFormatter.TimestampFormat = "2006-01-02 15:04:05"
 	log.SetFormatter(customFormatter)
 	customFormatter.FullTimestamp = true
-	loglevel, _ := log.ParseLevel("info")
+	loglevel, _ := log.ParseLevel(LogLevel)
 	log.SetLevel(loglevel)
 }
 
 func main() {
 	// 初始化数据，需要用户输入
-	successExpectNum := 4900
-	failedExpectNum := 5000
-	regionId := "cn-beijing"
-	//clusterId := ""
-	// essAutoscalingGroupId := ""
-	// 1.16.9
-	clusterId := ""
-	essAutoscalingGroupId := ""
-	essScalingPolicy := "recycle" // or "release"
 	akInfo := types.AKInfo{
 		AccessKeyID:     "",
 		AccessKeySecret: "",
 	}
 
+	regionId := "cn-beijing"
+	clusterId := ""
+	essAutoscalingGroupId := ""
+	essScalingPolicy := "recycle" // or "release"
+
+	depNamespace := "default"
+	depName := ""
+	successExpectNum := 4900
+	failedExpectNum := 5000
+
 	// 超时时间限制(可自定义)
+	podsAllCreatedLimit := time.Minute * 3
+	podsAllFailLimit := time.Minute * 5
 	triggerLimitDuration := time.Minute * 15
-	readyLimitDuration := time.Minute * 120
+	readyLimitDuration := time.Minute * 30
 
 	// key:instance id
 	ecsStatusMap := map[string]*types.CoreTimeStamp{}
 	// key:instance id,value: status
 	readyNodes := map[string]string{}
 
-	// test
 	client, _ := innerK8s.GetK8sClient(ClusterKubeConfigPath)
-	//fmt.Println(innerK8s.IsNodeReady(client, "cn-beijing.10.128.37.66"))
-	//fmt.Println(innerK8s.IsDeploymentReady(client, "nginx"))
-	//return
 
 	// pods fail test case
-	//depName := "nginx-ok-selector" //
-	depName := "nginx-fail" //
 	startRunTime := time.Now()
 	allPodsExist := time.Now()
 	log.Infof("script starts at %s", startRunTime)
 
-	// get deptime
+	// get dep time
 	err := utils.WaitForResultWithError(fmt.Sprintf("Wait for dep replica = pods counts"), func() (bool, error) {
 		// 获取ecs弹出时间 判断状态是否为running —— —— ECS running 时间
-		equal := innerK8s.GetDepPodsTime(client, depName)
+		equal := innerK8s.GetPodsCreatedTime(client, depNamespace, depName)
 		if equal {
 			allPodsExist = time.Now()
-			log.Infof("all pods exist time is %s, durations is %d seconds", allPodsExist, allPodsExist.Unix()-startRunTime.Unix())
+			log.Infof("[Results] All pods exist time is %s, durations is %d seconds", allPodsExist, allPodsExist.Unix()-startRunTime.Unix())
 			return true, nil
 		}
 		return false, fmt.Errorf("dep replica != pods counts")
-	}, false, 2, int(readyLimitDuration.Seconds()))
+	}, false, 1, int(podsAllCreatedLimit.Seconds()))
+
 	latestTime := time.Now().AddDate(-1, 0, 0)
 	err = utils.WaitForResultWithError(fmt.Sprintf("Wait for dep replica = pods counts"), func() (bool, error) {
 		// 获取ecs弹出时间 判断状态是否为running —— —— ECS running 时间
-		lt := innerK8s.GetAllPodUnscheduleTime(client, failedExpectNum)
+		lt := innerK8s.GetAllPodsUnscheduleTime(client, failedExpectNum, depNamespace, depName)
 		if lt != nil {
 			latestTime = *lt
-			log.Infof("All pods unschedule time is %s durations is %d seconds", latestTime, latestTime.Unix()-allPodsExist.Unix())
+			//log.Infof("All pods unschedule time is %s durations is %d seconds", latestTime, latestTime.Unix()-allPodsExist.Unix())
+			log.Infof("[Results] All pods unschedule time is %s durations is %d seconds", time.Now(), time.Now().Unix()-allPodsExist.Unix())
 			return true, nil
 		}
 		return false, fmt.Errorf("not get latest time yet")
-	}, false, 20, int(readyLimitDuration.Seconds()))
-	//return
-	//time.Sleep(12)
+	}, false, 20, int(podsAllFailLimit.Seconds()))
+
+	if OnlyFastFail {
+		log.Infof("only run fast fail test, script Ends at %s", time.Now())
+		return
+	}
+
+	// scale up test
 	// 脚本运行起始时间
 	startTime := time.Now()
 	fmt.Printf("scale up test start run time is %s\n", time.Now())
@@ -145,7 +151,7 @@ func main() {
 	latestTime = time.Now().AddDate(-1, 0, 0)
 	err = utils.WaitForResultWithError(fmt.Sprintf("Wait for dep replica = pods counts"), func() (bool, error) {
 		// 获取ecs弹出时间 判断状态是否为running —— —— ECS running 时间
-		lt := innerK8s.GetAllPodsReadyTime(client, successExpectNum)
+		lt := innerK8s.GetAllPodsReadyTime(client, successExpectNum, depNamespace, depName)
 		if lt != nil {
 			latestTime = *lt
 			return true, nil
@@ -154,7 +160,7 @@ func main() {
 	}, false, 10, int(readyLimitDuration.Seconds()))
 
 	// print results
-	log.Infof("All pods ready time is %s durations is %d seconds", latestTime, latestTime.Unix()-allPodsExist.Unix())
+	log.Infof("[Results] All pods ready time is %s durations is %d seconds", latestTime, latestTime.Unix()-allPodsExist.Unix())
 
 }
 
@@ -189,7 +195,7 @@ func countLatestTime(ecsStatusMap map[string]*types.CoreTimeStamp) {
 			latestReadyTime = nowReadyTime
 		}
 	}
-	log.Infof("Latest node running time is %s, Latest ready time is %s, Latest node ready time is %s", latestRunningTime, latestInserviceTime, latestReadyTime)
+	log.Infof("[Results] Latest node running time is %s, Latest in-service time is %s, Latest node ready time is %s", latestRunningTime, latestInserviceTime, latestReadyTime)
 }
 func SetNodeReadyTime(k8sClient *kubernetes.Clientset, timeRecorder *map[string]*types.CoreTimeStamp, readyNodes *map[string]string, clusterId string, akInfo types.AKInfo, region string) {
 	if k8sClient == nil {
@@ -199,10 +205,9 @@ func SetNodeReadyTime(k8sClient *kubernetes.Clientset, timeRecorder *map[string]
 	if len(*timeRecorder) == 0 {
 		return
 	}
-	//log.Infof("Before SetNodeReadyTime readyNodes is %v timeRecorder is %v", *readyNodes, *timeRecorder)
-	//log.Infof("Before SetNodeReadyTime timeRecorder is %v", *timeRecorder)
+	log.Debugf("Before SetNodeReadyTime readyNodes is %v timeRecorder is %v", *readyNodes, *timeRecorder)
 	//for k,v := range *timeRecorder {
-	//	log.Infof("Before timeRecorder K: %s v: %v", k, *v)
+	//	log.Debugf("Before timeRecorder K: %s v: %v", k, *v)
 	//}
 	resp, err := aliyun.GetNodes(clusterId, akInfo)
 	if err != nil {
@@ -216,14 +221,12 @@ func SetNodeReadyTime(k8sClient *kubernetes.Clientset, timeRecorder *map[string]
 		if (*readyNodes)[node.InstanceId] == "ready" {
 			continue
 		}
-		//log.Infof("%s is not in readyNodes", node.InstanceId)
-		//if times, ok := (*timeRecorder)[node.InstanceId]; ok && !(times.ReadyTime.IsZero()) {
-		//	continue
-		//}
+		log.Debugf("%s is not in readyNodes", node.InstanceId)
+
 		if (*timeRecorder)[node.InstanceId] == nil {
 			continue
 		}
-		//log.Infof("%s is in timeRecorder", node.InstanceId)
+		log.Debugf("%s is in timeRecorder", node.InstanceId)
 		// search from apiserver
 		nodeName := node.NodeName
 		if nodeName == "" {
@@ -235,7 +238,6 @@ func SetNodeReadyTime(k8sClient *kubernetes.Clientset, timeRecorder *map[string]
 		}
 		log.Infof("start to wait for %s （nodename: %s) to be Ready", node.InstanceId, nodeName)
 		if innerK8s.IsNodeReady(k8sClient, nodeName) {
-			//(*timeRecorder)[node.InstanceId].ReadyTime = fmt.Sprintf("%s", time.Now())
 			(*timeRecorder)[node.InstanceId].ReadyTime = time.Now()
 			(*readyNodes)[node.InstanceId] = "ready"
 			// del from queue
@@ -245,9 +247,5 @@ func SetNodeReadyTime(k8sClient *kubernetes.Clientset, timeRecorder *map[string]
 			//log.Infof("%s is not ready, status is %s, nodeinfo is %v", node.InstanceId, node.NodeStatus, *node)
 		}
 	}
-	//log.Infof("After SetNodeReadyTime readyNodes is %v ", *readyNodes)
-}
-
-func CheckPodReadyTime(k8sClient *kubernetes.Clientset, timeRecorder *map[string]*types.CoreTimeStamp, readyNodes *map[string]string, clusterId string, akInfo types.AKInfo) {
-
+	log.Debugf("After SetNodeReadyTime readyNodes is %v ", *readyNodes)
 }
